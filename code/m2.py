@@ -49,8 +49,8 @@ c_min2 = 0.02
 TPI_tol = 1e-9
 TPI_max_iter = 1000
 SS_tol = 1e-10
-SS_max_iter = 100000
-xi_ss = 0.0001  # Damping parameter for SS iteration
+SS_max_iter = 1000
+xi_ss = 0.01  # Damping parameter for SS iteration
 xi_tpi = 0.5  # Damping parameter for TPI iteration
 epsilon_ss = 1e-5  # Error term for steady-state boundaries
 
@@ -88,11 +88,11 @@ def ss_KL1_zerofunc(KLratio, *args):
     p2, gamma1, Z1, delta1, gamma2, Z2, delta2 = args
     MPK1 = gamma1 * Z1 * (KLratio ** (gamma1 - 1)) - delta1
     MPK2 = (
-        gamma2 * p2 * Z2 *
+        gamma2 * Z2 *
         (
             (
                 ((1 - gamma2) * p2 * Z2) /
-                ((1-gamma1) * Z1 * (KLratio ** gamma1))
+                ((1 - gamma1) * Z1 * (KLratio ** gamma1))
             ) ** ((1 - gamma2) / gamma2)
         ) - delta2
     )
@@ -108,11 +108,11 @@ def ss_KL2_zerofunc(KLratio, *args):
         (
             (
                 ((1 - gamma1) * Z1) /
-                ((1-gamma2) * p2 * Z2 * (KLratio ** gamma2))
+                ((1 - gamma2) * p2 * Z2 * (KLratio ** gamma2))
             ) ** ((1 - gamma1) / gamma1)
         ) - delta1
     )
-    MPK2 = gamma2 * p2 * Z2 * (KLratio ** (gamma2 - 1)) - delta2
+    MPK2 = gamma2 * Z2 * (KLratio ** (gamma2 - 1)) - delta2
     zerofunc = MPK1 - MPK2
 
     return zerofunc
@@ -124,21 +124,25 @@ def get_w_KL(KLratio_i, p_i, Z_i, gamma_i):
     return w
 
 
-def get_r_KL(KLratio_i, p_i, Z_i, gamma_i, delta_i):
-    r = gamma_i * p_i * Z_i * (KLratio_i ** (gamma_i - 1)) - delta_i
+def get_r_KL(KLratio_i, Z_i, gamma_i, delta_i):
+    r = gamma_i * Z_i * (KLratio_i ** (gamma_i - 1)) - delta_i
 
     return r
 
 
+def get_YLi_ratio(KLi_ratio, Z_i, gamma_i):
+    YLi_ratio = Z_i * (KLi_ratio ** gamma_i)
+
+    return YLi_ratio
+
+
 def get_b2_ss(w, r, p, p1, p2, n1, n2, c_min1, c_min2, beta, sigma):
-    num_term1 = (w / p) * n1 - (p1 / p) * c_min1 - (p2 / p) * c_min2
+    num_term1 = w * n1 - p1 * c_min1 - p2 * c_min2
     num_term2 = (
-        (((beta) * (1 + r)) ** (-1 / sigma)) *
-        ((w / p) * n2 - (p1 / p) * c_min1 - (p2 / p) * c_min2)
+        ((beta * (1 + r)) ** (-1 / sigma)) *
+        (w * n2 - p1 * c_min1 - p2 * c_min2)
     )
-    denom = (
-        (1 / p) + (((beta) * (1 + r)) ** (-1 / sigma)) * ((1 + r) / p)
-    )
+    denom = 1 + ((beta * (1 + r)) ** (-1 / sigma)) * (1 + r)
     b2 = (num_term1 - num_term2) / denom
 
     return b2
@@ -181,10 +185,10 @@ def get_p2_new_ss(L1, K2, w, n1, n2, Z2, gamma2):
     return p2_new
 
 
-def get_K1_new_ss(Y1, L1, Z1, gamma1):
-    K1_new = (Y1 / (Z1 * (L1 ** (1 - gamma1)))) ** (1 / gamma1)
+# def get_K1_new_ss(Y1, L1, Z1, gamma1):
+#     K1_new = (Y1 / (Z1 * (L1 ** (1 - gamma1)))) ** (1 / gamma1)
 
-    return K1_new
+#     return K1_new
 
 
 # def get_Y(K, L, Z, gamma):
@@ -289,10 +293,7 @@ def get_K1_new_ss(Y1, L1, Z1, gamma1):
 start_time_ss = time.time()
 # Guess initial values for \bar{p}_2 and \bar{K}_1
 p2_guess = 0.8
-K1_guess = 0.01
 p2_init = p2_guess
-K1_min = epsilon_ss
-K1_init = np.maximum(K1_min, K1_guess)
 
 SS_dist = 100.0
 SS_iter = 0
@@ -300,8 +301,10 @@ print("")
 print("Starting steady-state equilibrium computation.")
 while SS_dist > SS_tol and SS_iter < SS_max_iter:
     SS_iter += 1
+    # print("p2_init:", p2_init)
     pi_vec = np.array([1.0, p2_init])
     p = get_p(pi_vec, alpha_i_vec)
+    # print("p:", p)
     sol_KL1_ss = opt.root_scalar(
         ss_KL1_zerofunc, bracket=[1e-9, 20.0], method="brentq", args=(
             p2_init, gamma1, Z1, delta1, gamma2, Z2, delta2
@@ -315,6 +318,7 @@ while SS_dist > SS_tol and SS_iter < SS_max_iter:
         print("Iterations:", sol_KL1_ss.iterations)
         print("Method:", sol_KL1_ss.method)
     KL1ratio = sol_KL1_ss.root
+    # print("KL1ratio:", KL1ratio)
     sol_KL2_ss = opt.root_scalar(
         ss_KL2_zerofunc, bracket=[1e-9, 20.0], method="brentq", args=(
             p2_init, gamma1, Z1, delta1, gamma2, Z2, delta2
@@ -328,24 +332,20 @@ while SS_dist > SS_tol and SS_iter < SS_max_iter:
         print("Iterations:", sol_KL2_ss.iterations)
         print("Method:", sol_KL2_ss.method)
     KL2ratio = sol_KL2_ss.root
+    # print("KL2ratio:", KL2ratio)
     w = get_w_KL(KL1ratio, p1, Z1, gamma1)
-    r = get_r_KL(KL1ratio, p1, Z1, gamma1, delta1)
-    L1_min = epsilon_ss
-    L1_max = n1 + n2 - epsilon_ss
-    if L1_max <= L1_min:
-        raise ValueError("No feasible L1 exists: L1_max <= L1_min.")
-    L1_uncstr = K1_init / KL1ratio
-    if L1_uncstr < L1_min:
-        L1 = L1_min
-    elif L1_uncstr > L1_max:
-        L1 = L1_max
-    else:
-        L1 = L1_uncstr
-    I1 = delta1 * K1_init
-    b2_min = np.maximum(
-        (p1 * c_min1 + p2_init * c_min2 - w * n2) / (1 + r) + epsilon_ss,
-        K1_init + epsilon_ss
-    )
+    # print("w:", w)
+    r = get_r_KL(KL1ratio, Z1, gamma1, delta1)
+    # print("r:", r)
+    YL1ratio = get_YLi_ratio(KL1ratio, Z1, gamma1)
+    # print("YL1ratio:", YL1ratio)
+    YL2ratio = get_YLi_ratio(KL2ratio, Z2, gamma2)
+    # print("YL2ratio:", YL2ratio)
+    IL1ratio = delta1 * KL1ratio
+    # print("IL1ratio:", IL1ratio)
+    IL2ratio = delta2 * KL2ratio
+    # print("IL2ratio:", IL2ratio)
+    b2_min = (p1 * c_min1 + p2_init * c_min2 - w * n2) / (1 + r) + epsilon_ss
     b2_max = (
         (w / p) * n1 - (p1 / p) * c_min1 - (p2_init / p) * c_min2 - epsilon_ss
     )
@@ -356,50 +356,73 @@ while SS_dist > SS_tol and SS_iter < SS_max_iter:
     )
     if b2_uncstr < b2_min:
         b2 = b2_min
+        # print("b2:", b2, "<-- b2 constrained to b2_min")
     elif b2_uncstr > b2_max:
         b2 = b2_max
-    else:
+        # print("b2:", b2, "<-- b2 constrained to b2_max")
+    elif b2_uncstr >= b2_min and b2_uncstr <= b2_max:
         b2 = b2_uncstr
+        # print("b2:", b2, "<-- b2 unconstrained")
     c1 = get_c_s1(b2, w, p1, p2_init, p, n1, c_min1, c_min2)
+    # print("c1:", c1)
     c2 = get_c_s2(b2, w, r, p1, p2_init, p, n2, c_min1, c_min2)
+    # print("c2:", c2)
     c1_1 = get_c_is(alpha1, p1, p, c1, c_min1)
+    # print("c1_1:", c1_1)
     c1_2 = get_c_is(alpha1, p1, p, c2, c_min1)
+    # print("c1_2:", c1_2)
     c2_1 = get_c_is(alpha2, p2_init, p, c1, c_min2)
+    # print("c2_1:", c2_1)
     c2_2 = get_c_is(alpha2, p2_init, p, c2, c_min2)
+    # print("c2_2:", c2_2)
     C1 = c1_1 + c1_2
+    # print("C1:", C1)
     C2 = c2_1 + c2_2
-    K2 = b2 - K1_init
-    L2_min = epsilon_ss
-    L2_max = n1 + n2 - epsilon_ss
-    if L2_max <= L2_min:
-        raise ValueError("No feasible L2 exists: L2_max <= L2_min.")
-    L2_uncstr = K2 / KL2ratio
-    if L2_uncstr < L2_min:
-        L2 = L2_min
-    elif L2_uncstr > L2_max:
-        L2 = L2_max
-    else:
-        L2 = L2_uncstr
-    I2 = delta2 * K2
-    Y1 = C1 + I1
-    Y2 = C2 + I2
-    p2_new = get_p2_new_ss(L1, K2, w, n1, n2, Z2, gamma2)
-    K1_new = get_K1_new_ss(Y1, L1, Z1, gamma1)
-    SS_dist = max(abs(p2_new - p2_init), abs(K1_new - K1_init))
+    # print("C2:", C2)
+    L1_min = epsilon_ss
+    L1_max = n1 + n2 - epsilon_ss
+    L1_uncstr = C1 / (YL1ratio - IL1ratio)
+    if L1_max <= L1_min:
+        raise ValueError("No feasible L1 exists: L1_max <= L1_min.")
+    if L1_uncstr < L1_min:
+        L1 = L1_min
+        # print("L1:", L1, "<-- L1 constrained to L1_min")
+    elif L1_uncstr > L1_max:
+        L1 = L1_max
+        # print("L1:", L1, "<-- L1 constrained to L1_max")
+    elif L1_uncstr >= L1_min and L1_uncstr <= L1_max:
+        L1 = L1_uncstr
+        # print("L1:", L1, "<-- L1 unconstrained")
+    K1 = KL1ratio * L1
+    # print("K1:", K1)
+    I1 = IL1ratio * L1
+    # print("I1:", I1)
+    Y1 = YL1ratio * L1
+    # print("Y1:", Y1)
+    L2 = n1 + n2 - L1
+    # print("L2:", L2)
+    K2 = KL2ratio * L2
+    # print("K2:", K2)
+    I2 = IL2ratio * L2
+    # print("I2:", I2)
+    Y2 = YL2ratio * L2
+    # print("Y2:", Y2)
+    # print("Goods market clearing Y2 - C2 - I2:", Y2 - C2 - I2)
+    SS_dist = abs(K1 + p2_init * K2 - b2)
+    # SS_dist = abs(Y2 - C2 - I2)
     # print(
-    #     f"Iteration {SS_iter}: p2 = {p2_init}, K1 = {K1_init}, " +
-    #     f"SS_dist = {SS_dist}"
+    #     f"Iteration {SS_iter}: p2 = {p2_init}, SS_dist = {SS_dist}"
     # )
+    dif_pct = (K1 + p2_init * K2 - b2) / max(K1 + p2_init * K2, b2)
+    # dif_pct = (Y2 - C2 - I2) / max(Y2, C2 + I2)
     if SS_dist > SS_tol:
-        p2_init = xi_ss * p2_new + (1 - xi_ss) * p2_init
-        K1_init = xi_ss * K1_new + (1 - xi_ss) * K1_init
+        p2_init = p2_init * (1 + xi_ss * dif_pct)
 
 compute_time_ss = time.time() - start_time_ss
 print("Steady state compute time:", display_time(compute_time_ss))
 print(f"Steady-state iterations = {SS_iter}, SS_dist = {SS_dist}")
-resource_constraint_error_ss = (
-    Y2 - (Z2 * (K2 ** gamma2) * (L2 ** (1 - gamma2)))
-)
+resource_constraint_error_ss = Y2 - C2 - I2
+# resource_constraint_error_ss = K1 + p2_init * K2 - b2
 print(
     "Steady-state resource constraint " +
     f"error: {resource_constraint_error_ss}"
@@ -449,15 +472,15 @@ elif L1_ss > L1_min and L1_ss < L1_max:
 else:
     print("Steady-state L1:", L1_ss, "<-- L1_ss outside feasible range")
 L2_ss = L2
-if L2_ss == L2_min:
+if L2_ss == L1_min:
     print("Steady-state L2:", L2_ss, "<-- L2_ss constrained to L2_min")
-elif L2_ss == L2_max:
+elif L2_ss == L1_max:
     print("Steady-state L2:", L2_ss, "<-- L2_ss constrained to L2_max")
-elif L2_ss > L2_min and L2_ss < L2_max:
+elif L2_ss > L1_min and L2_ss < L1_max:
     print("Steady-state L2:", L2_ss, "<-- L2_ss unconstrained")
 else:
     print("Steady-state L2:", L2_ss, "<-- L2_ss outside feasible range")
-K1_ss = K1_init
+K1_ss = K1
 print("Steady state K1:", K1_ss)
 K2_ss = K2
 print("Steady state K2:", K2_ss)
