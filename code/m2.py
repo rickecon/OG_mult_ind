@@ -138,13 +138,14 @@ def tp_KL1_zerofunc(KL1rat_path, *args):
     p2t_path, p2tm1_path, gamma1, Z1, delta1, gamma2, Z2, delta2 = args
     MPK1 = gamma1 * Z1 * (KL1rat_path ** (gamma1 - 1)) - delta1
     MPK2 = (
-        (p2t_path / p2tm1_path) * gamma2 * Z2 *
-        (
-            (
-                (p2t_path * (1 - gamma2) * Z2) /
-                ((1 - gamma1) * Z1 * (KL1rat_path ** gamma1))
-            ) ** ((1 - gamma2) / gamma2)
-        ) - delta2
+        (p2t_path / p2tm1_path) * (
+            gamma2 * Z2 * (
+                (
+                    (p2t_path * (1 - gamma2) * Z2) /
+                    ((1 - gamma1) * Z1 * (KL1rat_path ** gamma1))
+                ) ** ((1 - gamma2) / gamma2)
+            ) + 1 - delta2
+        ) - 1
     )
     zerofunc = MPK1 - MPK2
 
@@ -168,9 +169,9 @@ def get_w_KL(KLratio_i, p_i, Z_i, gamma_i):
 
 def get_r_KL(KLratio_i, p_it, p_itm1, Z_i, gamma_i, delta_i):
     r = (
-        (p_it / p_itm1) * gamma_i * Z_i * (KLratio_i ** (gamma_i - 1)) -
+        (p_it / p_itm1) * gamma_i * Z_i * (KLratio_i ** (gamma_i - 1)) + 1 -
         delta_i
-    )
+    ) - 1
 
     return r
 
