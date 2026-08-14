@@ -496,15 +496,6 @@ while TPI_dist > TPI_tol and TPI_iter < TPI_max_iter:
     TPI_iter += 1
     p2t_path = np.append(p2tm1_path_init[1:], p2_ss)
     p_path = get_p_tp(p1_path, p2t_path, alpha_i_vec)
-    # plt.plot(
-    #     np.arange(1, T + 1), p2_path_init,
-    #     label=f"p2_path_init, iter {TPI_iter}"
-    # )
-    # plt.plot(np.arange(1, T + 1), p_path, label=f"p_path, iter {TPI_iter}")
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Price $p_{2,t}$ and $p_t$")
-    # plt.legend()
-    # plt.show()
     KL1_args = (
         p2t_path, p2tm1_path_init, gamma1, Z1, delta1, gamma2, Z2, delta2
     )
@@ -530,44 +521,10 @@ while TPI_dist > TPI_tol and TPI_iter < TPI_max_iter:
     KL2rat_path = get_KL2ratio_tp(
         KL1rat_path, p2t_path, gamma1, Z1, gamma2, Z2
     )
-    # plt.plot(
-    #     np.arange(1, T + 1), KL1rat_path, label=r"$\{K_{1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), KL2rat_path, label=r"$\{K_{2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Capital-labor ratio $K_{i,t}/L_{i,t}$")
-    # plt.legend()
-    # plt.show()
     w_path = get_w_KL(KL1rat_path, p1_path, Z1, gamma1)
-    # plt.plot(
-    #     np.arange(1, T + 1), w_path, label=r"$\{w_t\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"wage $w_t$")
-    # plt.legend()
-    # plt.show()
     r_path = get_r_KL(KL1rat_path, p1_path, p1_path, Z1, gamma1, delta1)
-    # plt.plot(
-    #     np.arange(1, T + 1), r_path, label=r"$\{r_t\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"interest rate $r_t$")
-    # plt.legend()
-    # plt.show()
     YL1rat_path = get_YLi_ratio(KL1rat_path, Z1, gamma1)
     YL2rat_path = get_YLi_ratio(KL2rat_path, Z2, gamma2)
-    # plt.plot(
-    #     np.arange(1, T + 1), YL1rat_path, label=r"$\{Y_{1,t}/L_{1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), YL2rat_path, label=r"$\{Y_{2,t}/L_{2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Output-labor ratio $Y_{i,t}/L_{i,t}$")
-    # plt.legend()
-    # plt.show()
     wtp1_path = np.append(w_path[1:], w_ss)
     rtp1_path = np.append(r_path[1:], r_ss)
     ptp1_path = np.append(p_path[1:], p_ss)
@@ -577,119 +534,30 @@ while TPI_dist > TPI_tol and TPI_iter < TPI_max_iter:
         p2tp1_path, n1, n2, c_min1, c_min2, beta, sigma
     )
     b2t_path = np.append(b2_1, b2tp1_path[:-1])
-    # plt.plot(
-    #         np.arange(1, T + 1), b2t_path, label=r"$\{b_{2,t}\}_{t=1}^T$"
-    #     )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"household savings $b_{2,t}$")
-    # plt.legend()
-    # plt.show()
     c_s1_path = get_ct_s1(
         b2tp1_path, w_path, p1_path, p2t_path, p_path, n1, c_min1, c_min2
     )
     c_s2_path = get_ct_s2(
         b2t_path, w_path, r_path, p1_path, p2t_path, p_path, n2, c_min1, c_min2
     )
-    # plt.plot(
-    #     np.arange(1, T + 1), c_s1_path, label=r"$\{c_{s=1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), c_s2_path, label=r"$\{c_{s=2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Composite good consumption $c_{s,t}$")
-    # plt.legend()
-    # plt.show()
     c_11_path = get_c_is(alpha1, p1_path, p_path, c_s1_path, c_min1)
     c_12_path = get_c_is(alpha1, p1_path, p_path, c_s2_path, c_min1)
     c_21_path = get_c_is(alpha2, p2t_path, p_path, c_s1_path, c_min2)
     c_22_path = get_c_is(alpha2, p2t_path, p_path, c_s2_path, c_min2)
-    # plt.plot(
-    #     np.arange(1, T + 1), c_11_path, label=r"$\{c_{1,1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), c_12_path, label=r"$\{c_{1,2,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), c_21_path, label=r"$\{c_{2,1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), c_22_path, label=r"$\{c_{2,2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Differentiated good consumption $c_{i,s,t}$")
-    # plt.legend()
-    # plt.show()
     C1_path = c_11_path + c_12_path
     C2_path = c_21_path + c_22_path
-    # plt.plot(
-    #     np.arange(1, T + 1), C1_path, label=r"$\{C_{1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), C2_path, label=r"$\{C_{2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Total consumption of differentiated good $C_{i,t}$")
-    # plt.legend()
-    # plt.show()
     L1_path, L1_path_cstr = get_L1_path(
         b2t_path, p2tm1_path_init, KL1rat_path, KL2rat_path, n1, n2, L1_epsilon
     )
-    # if np.any(L1_path_cstr):
-    #     print("L1_path Warning: L1_path is constrained in some periods.")
-    #     print("L1_path_cstr:")
-    #     print(L1_path_cstr)
-    #     print("L1_path")
-    #     print(L1_path)
     L2_path = n1 + n2 - L1_path
-    # plt.plot(
-    #     np.arange(1, T + 1), L1_path, label=r"$\{L_{1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), L2_path, label=r"$\{L_{2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Labor $L_{i,t}$")
-    # plt.legend()
-    # plt.show()
     K1_path = KL1rat_path * L1_path
     K2_path = KL2rat_path * L2_path
-    # plt.plot(
-    #     np.arange(1, T + 1), K1_path, label=r"$\{K_{1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), K2_path, label=r"$\{K_{2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Aggregate capital $K_{i,t}$")
-    # plt.legend()
-    # plt.show()
     K1tp1_path = np.append(K1_path[1:], K1_ss)
     K2tp1_path = np.append(K2_path[1:], K2_ss)
     I1_path = K1tp1_path - (1 - delta1) * K1_path
     I2_path = K2tp1_path - (1 - delta2) * K2_path
-    # plt.plot(
-    #     np.arange(1, T + 1), I1_path, label=r"$\{I_{1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), I2_path, label=r"$\{I_{2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Investment $I_{i,t}$")
-    # plt.legend()
-    # plt.show()
     Y1_path = YL1rat_path * L1_path
     Y2_path = YL2rat_path * L2_path
-    # plt.plot(
-    #     np.arange(1, T + 1), Y1_path, label=r"$\{Y_{1,t}\}_{t=1}^T$"
-    # )
-    # plt.plot(
-    #     np.arange(1, T + 1), Y2_path, label=r"$\{Y_{2,t}\}_{t=1}^T$"
-    # )
-    # plt.xlabel(r"Period $t$")
-    # plt.ylabel(r"Output $Y_{i,t}$")
-    # plt.legend()
-    # plt.show()
     TPI_dist = np.max(np.absolute(Y2_path - C2_path - I2_path))
     pct_diff = (
         (Y2_path - C2_path - I2_path) / np.maximum(Y2_path, C2_path + I2_path)
