@@ -7,6 +7,7 @@ import pickle
 import time
 import numpy as np
 import scipy.optimize as opt
+from scipy.optimize import elementwise as eopt
 import matplotlib.pyplot as plt
 
 # Designate data and image directories
@@ -23,7 +24,7 @@ if not os.path.exists(images_dir):
 
 # Set parameters
 years_per_period = 30
-T = 20  # Guess for number of periods to steady-state
+T = 15  # Guess for number of periods to steady-state
 n1 = 1.0
 n2 = 0.3
 beta_annual = 0.96
@@ -46,12 +47,13 @@ print("Delta2 (per period):", delta2)
 p1 = 1.0
 c_min1 = 0.01
 c_min2 = 0.02
-TPI_tol = 1e-9
-TPI_max_iter = 1000
+L1_epsilon = 1e-3  # used for minimum and maximum values of L1 and L2
+TPI_tol = 1e-10
+TPI_max_iter = 100000
 SS_tol = 1e-10
 SS_max_iter = 1000
 xi_ss = 0.01  # Damping parameter for SS iteration
-xi_tpi = 0.5  # Damping parameter for TPI iteration
+xi_tpi = 0.0001  # Damping parameter for TPI iteration
 epsilon_ss = 1e-5  # Error term for steady-state boundaries
 
 # Define functions
@@ -63,10 +65,10 @@ def display_time(seconds):
     return f"{int(hours)}h {int(minutes)}m {sec:.5f}s"
 
 
-def get_p(pi_vec, alpha_i_vec):
+def get_p_ss(pi_vec, alpha_i_vec):
     """
-    Solve for composite consumption good price from differentiated goods prices
-    and parameters
+    Solve for steady-state composite consumption good price from differentiated
+    goods prices and parameters
 
     Args:
         pi_vec (np.array): Vector of differentiated goods prices. Should have
@@ -80,6 +82,28 @@ def get_p(pi_vec, alpha_i_vec):
         p (float): Composite price
     """
     p = np.prod((pi_vec / alpha_i_vec) ** alpha_i_vec)
+
+    return p
+
+
+def get_p_tp(p1_path, p2_path, alpha_i_vec):
+    """
+    Solve for transition path composite consumption good price from
+    differentiated goods prices and parameters
+
+    Args:
+        p1_path ((T,) vector): Vector of numeraire good prices. Should be a vector
+            of ones of length T.
+        p2_path ((T,) vector): Vector of differentiated good prices.
+        alpha_i_vec (I,): Vector of alpha_i parameters of dimension (,I)
+
+    Returns:
+        p (float): Composite price
+    """
+    p = (
+        ((p1_path / alpha_i_vec[0]) ** alpha_i_vec[0]) *
+        ((p2_path / alpha_i_vec[1]) ** alpha_i_vec[1])
+    )
 
     return p
 
@@ -101,31 +125,52 @@ def ss_KL1_zerofunc(KLratio, *args):
     return zerofunc
 
 
-def ss_KL2_zerofunc(KLratio, *args):
-    p2, gamma1, Z1, delta1, gamma2, Z2, delta2 = args
-    MPK1 = (
-        gamma1 * Z1 *
+def get_KL2ratio_ss(KL1ratio, p2_init, gamma1, Z1, gamma2, Z2):
+    KL2ratio = (
+        ((1 - gamma1) * Z1 * (KL1ratio ** gamma1)) /
+        ((1 - gamma2) * p2_init * Z2)
+    ) ** (1 / gamma2)
+
+    return KL2ratio
+
+
+def tp_KL1_zerofunc(KL1rat_path, *args):
+    p2t_path, p2tm1_path, gamma1, Z1, delta1, gamma2, Z2, delta2 = args
+    MPK1 = gamma1 * Z1 * (KL1rat_path ** (gamma1 - 1)) - delta1
+    MPK2 = (
+        (p2t_path / p2tm1_path) * gamma2 * Z2 *
         (
             (
-                ((1 - gamma1) * Z1) /
-                ((1 - gamma2) * p2 * Z2 * (KLratio ** gamma2))
-            ) ** ((1 - gamma1) / gamma1)
-        ) - delta1
+                (p2t_path * (1 - gamma2) * Z2) /
+                ((1 - gamma1) * Z1 * (KL1rat_path ** gamma1))
+            ) ** ((1 - gamma2) / gamma2)
+        ) - delta2
     )
-    MPK2 = gamma2 * Z2 * (KLratio ** (gamma2 - 1)) - delta2
     zerofunc = MPK1 - MPK2
 
     return zerofunc
 
 
+def get_KL2ratio_tp(KL1rat_path, p2_path, gamma1, Z1, gamma2, Z2):
+    KL2rat_path = (
+        ((1 - gamma1) * Z1 * (KL1rat_path ** gamma1)) /
+        (p2_path * (1 - gamma2) * Z2)
+    ) ** (1 / gamma2)
+
+    return KL2rat_path
+
+
 def get_w_KL(KLratio_i, p_i, Z_i, gamma_i):
-    w = (1 - gamma_i) * p_i * Z_i * (KLratio_i ** gamma_i)
+    w = p_i * (1 - gamma_i) * Z_i * (KLratio_i ** gamma_i)
 
     return w
 
 
-def get_r_KL(KLratio_i, Z_i, gamma_i, delta_i):
-    r = gamma_i * Z_i * (KLratio_i ** (gamma_i - 1)) - delta_i
+def get_r_KL(KLratio_i, p_it, p_itm1, Z_i, gamma_i, delta_i):
+    r = (
+        (p_it / p_itm1) * gamma_i * Z_i * (KLratio_i ** (gamma_i - 1)) -
+        delta_i
+    )
 
     return r
 
@@ -147,34 +192,73 @@ def get_b2_ss(w, r, p, p1, p2, n1, n2, c_min1, c_min2, beta, sigma):
 
     return b2
 
+def get_b2tp1_tp(
+    wt_path, pt_path, p2t_path, wtp1_path, rtp1_path, ptp1_path, p2tp1_path,
+    n1, n2, c_min1, c_min2, beta, sigma
+):
+    numer = (
+        (wt_path / pt_path) * n1 - (1 / pt_path) * c_min1 -
+        (p2t_path / pt_path) * c_min2 -
+        (((beta * pt_path * (1 + rtp1_path)) / (ptp1_path)) ** (-1 / sigma)) *
+        (
+            (wtp1_path / ptp1_path) * n2 - (1 / ptp1_path) * c_min1 -
+            (p2tp1_path / ptp1_path) * c_min2
+        )
+    )
+    denom = (
+        (1 / pt_path) +
+        (((beta * pt_path * (1 + rtp1_path)) / (ptp1_path)) ** (-1 / sigma)) *
+        ((1 + rtp1_path) / ptp1_path)
+    )
+    b2tp1_path = numer / denom
 
-def get_c_s1(b2, w, p1, p2, p, n1, c_min1, c_min2):
+    return b2tp1_path
+
+
+def get_ct_s1(b2tp1, wt, p1t, p2t, pt, n1, c_min1, c_min2):
     """
     Calculate the composite consumption of an young agent (s=1) from the budget
     constraint
     """
-    c_s1 = (w / p) * n1 - (p1 / p) * c_min1 - (p2 / p) * c_min2 - (b2 / p)
+    c_s1t = (
+        (wt / pt) * n1 - (p1t / pt) * c_min1 - (p2t / pt) * c_min2 -
+        (b2tp1 / pt)
+    )
 
-    return c_s1
+    return c_s1t
 
 
-def get_c_s2(b2, w, r, p1, p2, p, n2, c_min1, c_min2):
+def get_ct_s2(b2t, wt, rt, p1t, p2t, pt, n2, c_min1, c_min2):
     """
     Calculate the composite consumption of an old agent (s=2) from the budget
     constraint
     """
-    c_s2 = (
-        ((1 + r) / p) * b2 + (w / p) * n2 - (p1 / p) * c_min1 -
-        (p2 / p) * c_min2
+    c_s2t = (
+        ((1 + rt) / pt) * b2t + (wt / pt) * n2 - (p1t / pt) * c_min1 -
+        (p2t / pt) * c_min2
     )
 
-    return c_s2
+    return c_s2t
 
 
 def get_c_is(alpha_i, p_i, p, c_s, c_min_i):
     c_is = alpha_i * (p / p_i) * c_s + c_min_i
 
     return c_is
+
+
+def get_L1_path(b2t, p2tm1, KL1rat, KL2rat, n1, n2, L1_epsilon):
+    L1_path_uncstr = (
+        (b2t - p2tm1 * (n1 + n2) * KL2rat) / (KL1rat - p2tm1 * KL2rat)
+    )
+    L1_min = L1_epsilon
+    L1_max = n1 + n2 - L1_epsilon
+    L1_path = np.minimum(np.maximum(L1_path_uncstr, L1_min), L1_max)
+    # Make a boolean vector that equals True if any element of L1_path is equal
+    # to L1_min or L1_max
+    L1_path_cstr = np.logical_or(L1_path == L1_min, L1_path == L1_max)
+
+    return L1_path, L1_path_cstr
 
 
 def get_p2_new_ss(L1, K2, w, n1, n2, Z2, gamma2):
@@ -185,108 +269,25 @@ def get_p2_new_ss(L1, K2, w, n1, n2, Z2, gamma2):
     return p2_new
 
 
-# def get_K1_new_ss(Y1, L1, Z1, gamma1):
-#     K1_new = (Y1 / (Z1 * (L1 ** (1 - gamma1)))) ** (1 / gamma1)
-
-#     return K1_new
-
-
-# def get_Y(K, L, Z, gamma):
-#     Y = Z * (K ** gamma) * (L ** (1 - gamma))
-
-#     return Y
-
-
-# def get_L(n1, n2):
-#     L = n1 + n2
-
-#     return L
-
-
-# def get_w(K, L, p, Z, gamma):
-#     w = (1 - gamma) * p * Z * (K / L) ** gamma
-
-#     return w
-
-
-# def get_r(K, L, p, Z, gamma, delta):
-#     r = gamma * p * Z * (L / K) ** (1 - gamma) - delta
-
-#     return r
-
-
-# def get_b2_ss(w, r, n1, n2, c_min1, beta, sigma):
-#     numerator = (
-#         w * n1 - c_min1 -
-#         ((beta * (1 + r)) ** (-1 / sigma)) * (w * n2 - c_min1)
-#     )
-#     denominator = 1 + ((beta * (1 + r)) ** (-1 / sigma)) * (1 + r)
-#     b2_ss = numerator / denominator
-
-#     return b2_ss
-
-
-# def b2_ss_zerofunc(b2, *args):
-#     p, n1, n2, c_min1, Z, beta, sigma, gamma, delta = args
-#     L = get_L(n1, n2)
-#     K = b2
-#     w = get_w(K, L, p, Z, gamma)
-#     r = get_r(K, L, p, Z, gamma, delta)
-#     zerofunc = b2 - get_b2_ss(w, r, n1, n2, c_min1, beta, sigma)
-
-#     return zerofunc
-
-
-# def get_b2_tp(
-#     b2_0, w_path, r_path, p1_path, p_path, n1, n2, c_min1, beta, sigma
-# ):
-#     T = len(w_path)
-#     b2_path = np.zeros(T)
-#     b2_path[0] = b2_0
-#     w_path_t = w_path[:-1]
-#     w_path_tp1 = w_path[1:]
-#     r_path_tp1 = r_path[1:]
-#     p1_path_t = p1_path[:-1]
-#     p1_path_tp1 = p1_path[1:]
-#     p_path_t = p_path[:-1]
-#     p_path_tp1 = p_path[1:]
-#     num_term1 = (w_path_t / p_path_t) * n1 - (p1_path_t / p_path_t) * c_min1
-#     num_term2 = (
-#         (
-#             (
-#                 (beta * p_path_t * (1 + r_path_tp1)) / p_path_tp1
-#             ) ** (-1 / sigma)
-#         ) *
-#         ((w_path_tp1 / p_path_tp1) * n2 - (p1_path_tp1 / p_path_tp1) * c_min1)
-#     )
-#     denom = (
-#         (1 / p_path_t) + (
-#             (
-#                 ((beta * p_path_t * (1 + r_path_tp1)) / p_path_tp1) **
-#                 (-1 / sigma)
-#             ) * ((1 + r_path_tp1) / p_path_tp1)
-#         )
-#     )
-#     b2_path[1:] = (num_term1 - num_term2) / denom
-
-#     return b2_path
-
-
-# def series_plot(series, y_label, title=None, filename=None):
-#     plt.figure()
-#     T = len(series)
-#     per_vec = np.arange(1, T + 1)
-#     plt.plot(per_vec, series)
-#     plt.grid(True)
-#     # Add minor tick marks every 1 period only on the x-axis
-#     plt.gca().xaxis.set_minor_locator(plt.MultipleLocator(1))
-#     plt.ylabel(y_label)
-#     plt.xlabel(r"Period $t$")
-#     if title is not None:
-#         plt.title(title)
-#     if filename is not None:
-#         plt.savefig(os.path.join(images_dir, filename))
-#     plt.close()
+def series_plot(
+    series_lst, legend_lst, start_per_lst, y_label, title=None, filename=None
+):
+    plt.figure()
+    for ind, series in enumerate(series_lst):
+        T = len(series)
+        per_vec = np.arange(1, T + 1)
+        plt.plot(per_vec, series, label=legend_lst[ind])
+    plt.grid(True)
+    # Add minor tick marks every 1 period only on the x-axis
+    plt.gca().xaxis.set_minor_locator(plt.MultipleLocator(1))
+    plt.ylabel(y_label)
+    plt.xlabel(r"Period $t$")
+    plt.legend(loc="best")
+    if title is not None:
+        plt.title(title)
+    if filename is not None:
+        plt.savefig(os.path.join(images_dir, filename))
+    plt.close()
 
 
 # Solve for steady state equilibrium
@@ -301,10 +302,8 @@ print("")
 print("Starting steady-state equilibrium computation.")
 while SS_dist > SS_tol and SS_iter < SS_max_iter:
     SS_iter += 1
-    # print("p2_init:", p2_init)
     pi_vec = np.array([1.0, p2_init])
-    p = get_p(pi_vec, alpha_i_vec)
-    # print("p:", p)
+    p = get_p_ss(pi_vec, alpha_i_vec)
     sol_KL1_ss = opt.root_scalar(
         ss_KL1_zerofunc, bracket=[1e-9, 20.0], method="brentq", args=(
             p2_init, gamma1, Z1, delta1, gamma2, Z2, delta2
@@ -318,33 +317,13 @@ while SS_dist > SS_tol and SS_iter < SS_max_iter:
         print("Iterations:", sol_KL1_ss.iterations)
         print("Method:", sol_KL1_ss.method)
     KL1ratio = sol_KL1_ss.root
-    # print("KL1ratio:", KL1ratio)
-    sol_KL2_ss = opt.root_scalar(
-        ss_KL2_zerofunc, bracket=[1e-9, 20.0], method="brentq", args=(
-            p2_init, gamma1, Z1, delta1, gamma2, Z2, delta2
-        )
-    )
-    if not sol_KL2_ss.converged:
-        raise ValueError("KL2 root finding did not converge.")
-        print("Converged:", sol_KL2_ss.converged)
-        print("Flag:", sol_KL2_ss.flag)
-        print("Function calls:", sol_KL2_ss.function_calls)
-        print("Iterations:", sol_KL2_ss.iterations)
-        print("Method:", sol_KL2_ss.method)
-    KL2ratio = sol_KL2_ss.root
-    # print("KL2ratio:", KL2ratio)
+    KL2ratio = get_KL2ratio_ss(KL1ratio, p2_init, gamma1, Z1, gamma2, Z2)
     w = get_w_KL(KL1ratio, p1, Z1, gamma1)
-    # print("w:", w)
-    r = get_r_KL(KL1ratio, Z1, gamma1, delta1)
-    # print("r:", r)
+    r = get_r_KL(KL1ratio, 1.0, 1.0, Z1, gamma1, delta1)
     YL1ratio = get_YLi_ratio(KL1ratio, Z1, gamma1)
-    # print("YL1ratio:", YL1ratio)
     YL2ratio = get_YLi_ratio(KL2ratio, Z2, gamma2)
-    # print("YL2ratio:", YL2ratio)
     IL1ratio = delta1 * KL1ratio
-    # print("IL1ratio:", IL1ratio)
     IL2ratio = delta2 * KL2ratio
-    # print("IL2ratio:", IL2ratio)
     b2_min = (p1 * c_min1 + p2_init * c_min2 - w * n2) / (1 + r) + epsilon_ss
     b2_max = (
         (w / p) * n1 - (p1 / p) * c_min1 - (p2_init / p) * c_min2 - epsilon_ss
@@ -356,29 +335,18 @@ while SS_dist > SS_tol and SS_iter < SS_max_iter:
     )
     if b2_uncstr < b2_min:
         b2 = b2_min
-        # print("b2:", b2, "<-- b2 constrained to b2_min")
     elif b2_uncstr > b2_max:
         b2 = b2_max
-        # print("b2:", b2, "<-- b2 constrained to b2_max")
     elif b2_uncstr >= b2_min and b2_uncstr <= b2_max:
         b2 = b2_uncstr
-        # print("b2:", b2, "<-- b2 unconstrained")
-    c1 = get_c_s1(b2, w, p1, p2_init, p, n1, c_min1, c_min2)
-    # print("c1:", c1)
-    c2 = get_c_s2(b2, w, r, p1, p2_init, p, n2, c_min1, c_min2)
-    # print("c2:", c2)
+    c1 = get_ct_s1(b2, w, p1, p2_init, p, n1, c_min1, c_min2)
+    c2 = get_ct_s2(b2, w, r, p1, p2_init, p, n2, c_min1, c_min2)
     c1_1 = get_c_is(alpha1, p1, p, c1, c_min1)
-    # print("c1_1:", c1_1)
     c1_2 = get_c_is(alpha1, p1, p, c2, c_min1)
-    # print("c1_2:", c1_2)
     c2_1 = get_c_is(alpha2, p2_init, p, c1, c_min2)
-    # print("c2_1:", c2_1)
     c2_2 = get_c_is(alpha2, p2_init, p, c2, c_min2)
-    # print("c2_2:", c2_2)
     C1 = c1_1 + c1_2
-    # print("C1:", C1)
     C2 = c2_1 + c2_2
-    # print("C2:", C2)
     L1_min = epsilon_ss
     L1_max = n1 + n2 - epsilon_ss
     L1_uncstr = C1 / (YL1ratio - IL1ratio)
@@ -386,35 +354,19 @@ while SS_dist > SS_tol and SS_iter < SS_max_iter:
         raise ValueError("No feasible L1 exists: L1_max <= L1_min.")
     if L1_uncstr < L1_min:
         L1 = L1_min
-        # print("L1:", L1, "<-- L1 constrained to L1_min")
     elif L1_uncstr > L1_max:
         L1 = L1_max
-        # print("L1:", L1, "<-- L1 constrained to L1_max")
     elif L1_uncstr >= L1_min and L1_uncstr <= L1_max:
         L1 = L1_uncstr
-        # print("L1:", L1, "<-- L1 unconstrained")
     K1 = KL1ratio * L1
-    # print("K1:", K1)
     I1 = IL1ratio * L1
-    # print("I1:", I1)
     Y1 = YL1ratio * L1
-    # print("Y1:", Y1)
     L2 = n1 + n2 - L1
-    # print("L2:", L2)
     K2 = KL2ratio * L2
-    # print("K2:", K2)
     I2 = IL2ratio * L2
-    # print("I2:", I2)
     Y2 = YL2ratio * L2
-    # print("Y2:", Y2)
-    # print("Goods market clearing Y2 - C2 - I2:", Y2 - C2 - I2)
     SS_dist = abs(K1 + p2_init * K2 - b2)
-    # SS_dist = abs(Y2 - C2 - I2)
-    # print(
-    #     f"Iteration {SS_iter}: p2 = {p2_init}, SS_dist = {SS_dist}"
-    # )
     dif_pct = (K1 + p2_init * K2 - b2) / max(K1 + p2_init * K2, b2)
-    # dif_pct = (Y2 - C2 - I2) / max(Y2, C2 + I2)
     if SS_dist > SS_tol:
         p2_init = p2_init * (1 + xi_ss * dif_pct)
 
@@ -422,7 +374,6 @@ compute_time_ss = time.time() - start_time_ss
 print("Steady state compute time:", display_time(compute_time_ss))
 print(f"Steady-state iterations = {SS_iter}, SS_dist = {SS_dist}")
 resource_constraint_error_ss = Y2 - C2 - I2
-# resource_constraint_error_ss = K1 + p2_init * K2 - b2
 print(
     "Steady-state resource constraint " +
     f"error: {resource_constraint_error_ss}"
@@ -436,6 +387,10 @@ elif b2_ss > b2_min and b2_ss < b2_max:
     print("Steady-state b2:", b2_ss, "<-- b2_ss unconstrained")
 else:
     print("Steady-state b2:", b2_ss, "<-- b2_ss outside feasible range")
+c_s1_ss = c1
+print("Steady state c_s1:", c_s1_ss)
+c_s2_ss = c2
+print("Steady state c_s2:", c_s2_ss)
 c1_1_ss = c1_1
 print("Steady state c1_1:", c1_1_ss)
 c1_2_ss = c1_2
@@ -444,10 +399,6 @@ c2_1_ss = c2_1
 print("Steady state c2_1:", c2_1_ss)
 c2_2_ss = c2_2
 print("Steady state c2_2:", c2_2_ss)
-c_s1_ss = c1
-print("Steady state c_s1:", c_s1_ss)
-c_s2_ss = c2
-print("Steady state c_s2:", c_s2_ss)
 C1_ss = C1
 print("Steady state C1:", C1_ss)
 C2_ss = C2
@@ -524,173 +475,338 @@ ss_output_file = os.path.join(data_dir, "ss_output.pkl")
 with open(ss_output_file, "wb") as f:
     pickle.dump(ss_output, f)
 
+# Solve for the transition path equilibrium
+start_time_tpi = time.time()
+# Start with total household savings being 90% of the steady-state
+b2_1 = 0.96 * b2_ss
+print(r"Initial total household savings $b_{2,t=1}$ :", b2_1)
 
+# We know the equilibrium time path of the prices of the numeraire good
+p1_path = np.ones(T)
 
+# Guess a transition path for industry-2 prices
+p2tm1_path_init_guess = p2_ss * np.ones(T)
+p2tm1_path_init = p2tm1_path_init_guess.copy()
 
-# sol_ss = opt.root_scalar(
-#     b2_ss_zerofunc, x0=0.01, args=(
-#         p1, n1, n2, c_min1, Z1, beta, sigma, gamma1, delta1
-#     )
-# )
-# compute_time_ss = time.time() - start_time_ss
-# print("Steady state compute time:", display_time(compute_time_ss))
-# print("sol_ss output:")
-# print(sol_ss)
-# b2_ss = sol_ss.root
-# print("Steady state b2:", b2_ss)
-# L1_ss = get_L(n1, n2)
-# print("Steady state L:", L1_ss)
-# K1_ss = b2_ss
-# print("Steady state K:", K1_ss)
-# Y1_ss = get_Y(K1_ss, L1_ss, Z1, gamma1)
-# w_ss = get_w(K1_ss, L1_ss, p1, Z1, gamma1)
-# print("Steady state w:", w_ss)
-# r_ss = get_r(K1_ss, L1_ss, p1, Z1, gamma1, delta1)
-# print("Steady state r:", r_ss)
-# c_s1_ss = get_c_s1(b2_ss, w_ss, p1, p1, n1, c_min1)
-# print("Steady state c1_1:", c_s1_ss)
-# c_s2_ss = get_c_s2(b2_ss, w_ss, r_ss, p1, p1, n2, c_min1)
-# print("Steady state c1_2:", c_s2_ss)
-# c1_1_ss = get_c_is(alpha1, p1, p1, c_s1_ss, c_min1)
-# print("Steady state c1_1:", c1_1_ss)
-# c1_2_ss = get_c_is(alpha1, p1, p1, c_s2_ss, c_min1)
-# print("Steady state c1_2:", c1_2_ss)
-# C1_ss = c1_1_ss + c1_2_ss
-# print("Steady state C1:", C1_ss)
-# I1_ss = delta1 * K1_ss
-# print("Steady state I1:", I1_ss)
-# resource_constraint_error_ss = Y1_ss - C1_ss - I1_ss
-# print("Steady state resource constraint error:", resource_constraint_error_ss)
+TPI_dist = 100.0
+TPI_iter = 0
+print("")
+print("Starting transition path equilibrium computation.")
+while TPI_dist > TPI_tol and TPI_iter < TPI_max_iter:
+    TPI_iter += 1
+    p2t_path = np.append(p2tm1_path_init[1:], p2_ss)
+    p_path = get_p_tp(p1_path, p2t_path, alpha_i_vec)
+    # plt.plot(
+    #     np.arange(1, T + 1), p2_path_init,
+    #     label=f"p2_path_init, iter {TPI_iter}"
+    # )
+    # plt.plot(np.arange(1, T + 1), p_path, label=f"p_path, iter {TPI_iter}")
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Price $p_{2,t}$ and $p_t$")
+    # plt.legend()
+    # plt.show()
+    KL1_args = (
+        p2t_path, p2tm1_path_init, gamma1, Z1, delta1, gamma2, Z2, delta2
+    )
+    sol_KL1_bracket = eopt.bracket_root(
+        tp_KL1_zerofunc, xl0=1e-12 * np.ones(T), args=KL1_args
+    )
+    # If any of the elements of sol_KL1_bracket.success are False, raise an
+    # error that the bracket was not found
+    if not np.all(sol_KL1_bracket.success):
+        print("sol_KL1_bracket.success:")
+        print(sol_KL1_bracket.success)
+        err_msg = "KL1 bracket finding did not succeed in every period."
+        raise ValueError(err_msg)
+    sol_KL1_tp = eopt.find_root(
+        tp_KL1_zerofunc, sol_KL1_bracket.bracket, args=KL1_args
+    )
+    if not np.all(sol_KL1_tp.success):
+        print("sol_KL1_tp.success:")
+        print(sol_KL1_tp.success)
+        err_msg = "KL1 root finding did not succeed in every period."
+        raise ValueError(err_msg)
+    KL1rat_path = sol_KL1_tp.x
+    KL2rat_path = get_KL2ratio_tp(
+        KL1rat_path, p2t_path, gamma1, Z1, gamma2, Z2
+    )
+    # plt.plot(
+    #     np.arange(1, T + 1), KL1rat_path, label=r"$\{K_{1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), KL2rat_path, label=r"$\{K_{2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Capital-labor ratio $K_{i,t}/L_{i,t}$")
+    # plt.legend()
+    # plt.show()
+    w_path = get_w_KL(KL1rat_path, p1_path, Z1, gamma1)
+    # plt.plot(
+    #     np.arange(1, T + 1), w_path, label=r"$\{w_t\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"wage $w_t$")
+    # plt.legend()
+    # plt.show()
+    r_path = get_r_KL(KL1rat_path, p1_path, p1_path, Z1, gamma1, delta1)
+    # plt.plot(
+    #     np.arange(1, T + 1), r_path, label=r"$\{r_t\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"interest rate $r_t$")
+    # plt.legend()
+    # plt.show()
+    YL1rat_path = get_YLi_ratio(KL1rat_path, Z1, gamma1)
+    YL2rat_path = get_YLi_ratio(KL2rat_path, Z2, gamma2)
+    # plt.plot(
+    #     np.arange(1, T + 1), YL1rat_path, label=r"$\{Y_{1,t}/L_{1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), YL2rat_path, label=r"$\{Y_{2,t}/L_{2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Output-labor ratio $Y_{i,t}/L_{i,t}$")
+    # plt.legend()
+    # plt.show()
+    wtp1_path = np.append(w_path[1:], w_ss)
+    rtp1_path = np.append(r_path[1:], r_ss)
+    ptp1_path = np.append(p_path[1:], p_ss)
+    p2tp1_path = np.append(p2t_path[1:], p2_ss)
+    b2tp1_path = get_b2tp1_tp(
+        w_path, p_path, p2t_path, wtp1_path, rtp1_path, ptp1_path,
+        p2tp1_path, n1, n2, c_min1, c_min2, beta, sigma
+    )
+    b2t_path = np.append(b2_1, b2tp1_path[:-1])
+    # plt.plot(
+    #         np.arange(1, T + 1), b2t_path, label=r"$\{b_{2,t}\}_{t=1}^T$"
+    #     )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"household savings $b_{2,t}$")
+    # plt.legend()
+    # plt.show()
+    c_s1_path = get_ct_s1(
+        b2tp1_path, w_path, p1_path, p2t_path, p_path, n1, c_min1, c_min2
+    )
+    c_s2_path = get_ct_s2(
+        b2t_path, w_path, r_path, p1_path, p2t_path, p_path, n2, c_min1, c_min2
+    )
+    # plt.plot(
+    #     np.arange(1, T + 1), c_s1_path, label=r"$\{c_{s=1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), c_s2_path, label=r"$\{c_{s=2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Composite good consumption $c_{s,t}$")
+    # plt.legend()
+    # plt.show()
+    c_11_path = get_c_is(alpha1, p1_path, p_path, c_s1_path, c_min1)
+    c_12_path = get_c_is(alpha1, p1_path, p_path, c_s2_path, c_min1)
+    c_21_path = get_c_is(alpha2, p2t_path, p_path, c_s1_path, c_min2)
+    c_22_path = get_c_is(alpha2, p2t_path, p_path, c_s2_path, c_min2)
+    # plt.plot(
+    #     np.arange(1, T + 1), c_11_path, label=r"$\{c_{1,1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), c_12_path, label=r"$\{c_{1,2,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), c_21_path, label=r"$\{c_{2,1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), c_22_path, label=r"$\{c_{2,2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Differentiated good consumption $c_{i,s,t}$")
+    # plt.legend()
+    # plt.show()
+    C1_path = c_11_path + c_12_path
+    C2_path = c_21_path + c_22_path
+    # plt.plot(
+    #     np.arange(1, T + 1), C1_path, label=r"$\{C_{1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), C2_path, label=r"$\{C_{2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Total consumption of differentiated good $C_{i,t}$")
+    # plt.legend()
+    # plt.show()
+    L1_path, L1_path_cstr = get_L1_path(
+        b2t_path, p2tm1_path_init, KL1rat_path, KL2rat_path, n1, n2, L1_epsilon
+    )
+    # if np.any(L1_path_cstr):
+    #     print("L1_path Warning: L1_path is constrained in some periods.")
+    #     print("L1_path_cstr:")
+    #     print(L1_path_cstr)
+    #     print("L1_path")
+    #     print(L1_path)
+    L2_path = n1 + n2 - L1_path
+    # plt.plot(
+    #     np.arange(1, T + 1), L1_path, label=r"$\{L_{1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), L2_path, label=r"$\{L_{2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Labor $L_{i,t}$")
+    # plt.legend()
+    # plt.show()
+    K1_path = KL1rat_path * L1_path
+    K2_path = KL2rat_path * L2_path
+    # plt.plot(
+    #     np.arange(1, T + 1), K1_path, label=r"$\{K_{1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), K2_path, label=r"$\{K_{2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Aggregate capital $K_{i,t}$")
+    # plt.legend()
+    # plt.show()
+    K1tp1_path = np.append(K1_path[1:], K1_ss)
+    K2tp1_path = np.append(K2_path[1:], K2_ss)
+    I1_path = K1tp1_path - (1 - delta1) * K1_path
+    I2_path = K2tp1_path - (1 - delta2) * K2_path
+    # plt.plot(
+    #     np.arange(1, T + 1), I1_path, label=r"$\{I_{1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), I2_path, label=r"$\{I_{2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Investment $I_{i,t}$")
+    # plt.legend()
+    # plt.show()
+    Y1_path = YL1rat_path * L1_path
+    Y2_path = YL2rat_path * L2_path
+    # plt.plot(
+    #     np.arange(1, T + 1), Y1_path, label=r"$\{Y_{1,t}\}_{t=1}^T$"
+    # )
+    # plt.plot(
+    #     np.arange(1, T + 1), Y2_path, label=r"$\{Y_{2,t}\}_{t=1}^T$"
+    # )
+    # plt.xlabel(r"Period $t$")
+    # plt.ylabel(r"Output $Y_{i,t}$")
+    # plt.legend()
+    # plt.show()
+    TPI_dist = np.max(np.absolute(Y2_path - C2_path - I2_path))
+    pct_diff = (
+        (Y2_path - C2_path - I2_path) / np.maximum(Y2_path, C2_path + I2_path)
+    )
+    max_abs_pct_diff = np.max(np.absolute(pct_diff))
+    print(
+        f"Iteration {TPI_iter}, TPI_dist = {TPI_dist}, " +
+        f"max_abs_pct_diff = {max_abs_pct_diff}"
+    )
+    p2tm1_path_new = (
+        (1 + xi_tpi * pct_diff) * p2tm1_path_init
+    )
+    if TPI_dist > TPI_tol:
+        p2tm1_path_init = p2tm1_path_new.copy()
 
-# ss_output = {
-#     "sol_ss": sol_ss,
-#     "b2_ss": b2_ss,
-#     "L1_ss": L1_ss,
-#     "K1_ss": K1_ss,
-#     "Y1_ss": Y1_ss,
-#     "w_ss": w_ss,
-#     "r_ss": r_ss,
-#     "c_s1_ss": c_s1_ss,
-#     "c_s2_ss": c_s2_ss,
-#     "c1_1_ss": c1_1_ss,
-#     "c1_2_ss": c1_2_ss,
-#     "C1_ss": C1_ss,
-#     "I1_ss": I1_ss,
-#     "resource_constraint_error_ss": resource_constraint_error_ss,
-#     "compute_time_ss": compute_time_ss
-# }
-# # Save ss_output dictionary as a pickle file "ss_output.pkl" in the data_dir
-# ss_output_file = os.path.join(data_dir, "ss_output.pkl")
-# with open(ss_output_file, "wb") as f:
-#     pickle.dump(ss_output, f)
+resource_constraint_error_path_tpi = Y1_path - C1_path - I1_path
+print(
+    "Maximum absolute resource constraint error:",
+    np.max(np.absolute(resource_constraint_error_path_tpi))
+)
+compute_time_tpi = time.time() - start_time_tpi
+print(
+    "Transition path equilibrium compute time:",
+    display_time(compute_time_tpi)
+)
 
-# # Solve for the transition path equilibrium
-# start_time_tpi = time.time()
-# K1_0 = 0.9 * K1_ss # Start with capital being 90% of the steady-state
-# b2_0 = 0.9 * b2_ss
+p2tm1_path_long = np.append(p2tm1_path_init, p2_ss)
 
-# # We know the equilibrium time path of aggregate labor and prices
-# L1_path = np.ones(T) * L1_ss
-# p1_path = np.ones(T)
-# p_path = np.ones(T)
+tpi_output = {
+    "b2t_path": b2t_path,
+    "c_s1_path": c_s1_path,
+    "c_s2_path": c_s2_path,
+    "c_11_path": c_11_path,
+    "c_12_path": c_12_path,
+    "c_21_path": c_21_path,
+    "c_22_path": c_22_path,
+    "C1_path": C1_path,
+    "C2_path": C2_path,
+    "p1_path": p1_path,
+    "p2tm1_path_long": p2tm1_path_long,
+    "p_path": p_path,
+    "w_path": w_path,
+    "r_path": r_path,
+    "L1_path": L1_path,
+    "L2_path": L2_path,
+    "K1_path": K1_path,
+    "K2_path": K2_path,
+    "Y1_path": Y1_path,
+    "Y2_path": Y2_path,
+    "I1_path": I1_path,
+    "I2_path": I2_path,
+    "resource_constraint_error_path_tpi": resource_constraint_error_path_tpi,
+    "compute_time_tpi": compute_time_tpi
+}
 
-# # Guess a transition path for the aggregate capital stock
-# K1_path_init_guess = np.linspace(K1_0, K1_ss, T)
-# K1_path_init = K1_path_init_guess.copy()
+# Save tpi_output dictionary as a pickle file "tpi_output.pkl" in the data_dir
+tpi_output_file = os.path.join(data_dir, "tpi_output.pkl")
+with open(tpi_output_file, "wb") as f:
+    pickle.dump(tpi_output, f)
 
-# TPI_dist = 100.0
-# TPI_iter = 0
-# print("")
-# print("Starting transition path equilibrium computation.")
-# while TPI_dist > TPI_tol and TPI_iter < TPI_max_iter:
-#     TPI_iter += 1
-#     w_path = get_w(K1_path_init, L1_path, p1_path, Z1, gamma1)
-#     r_path = get_r(K1_path_init, L1_path, p1_path, Z1, gamma1, delta1)
-#     b2_path = get_b2_tp(
-#         b2_0, w_path, r_path, p1_path, p_path, n1, n2, c_min1, beta, sigma
-#     )
-#     K1_path_new = b2_path.copy()
-#     TPI_dist = np.max(np.absolute(K1_path_new - K1_path_init))
-#     K1_path_init = xi_tpi * K1_path_new + (1 - xi_tpi) * K1_path_init
-#     print(f"Iteration {TPI_iter}: TPI_dist = {TPI_dist}")
-
-# K1_path = K1_path_init.copy()
-# b2_path = K1_path.copy()
-# w_path = get_w(K1_path, L1_path, p1_path, Z1, gamma1)
-# r_path = get_r(K1_path, L1_path, p1_path, Z1, gamma1, delta1)
-# I1_path = np.append(K1_path[1:], K1_ss) - (1 - delta1) * K1_path
-# Y1_path = get_Y(K1_path, L1_path, Z1, gamma1)
-# b2_path_tp1 = np.append(b2_path[1:], b2_ss)
-# c_s1_path = get_c_s1(b2_path_tp1, w_path, p1_path, p_path, n1, c_min1)
-# c_s2_path = get_c_s2(b2_path, w_path, r_path, p1_path, p_path, n2, c_min1)
-# c1_1_path = get_c_is(alpha1, p1_path, p_path, c_s1_path, c_min1)
-# c1_2_path = get_c_is(alpha1, p1_path, p_path, c_s2_path, c_min1)
-# C1_path = c1_1_path + c1_2_path
-
-# resource_constraint_error_path_tpi = Y1_path - C1_path - I1_path
-# print(
-#     "Maximum absolute resource constraint error:",
-#     np.max(np.absolute(resource_constraint_error_path_tpi))
-# )
-
-# compute_time_tpi = time.time() - start_time_tpi
-# print(
-#     "Transition path equilibrium compute time:",
-#     display_time(compute_time_tpi)
-# )
-
-# tpi_output = {
-#     "b2_path": b2_path,
-#     "L1_path": L1_path,
-#     "K1_path": K1_path,
-#     "Y1_path": Y1_path,
-#     "w_path": w_path,
-#     "r_path": r_path,
-#     "c_s1_path": c_s1_path,
-#     "c_s2_path": c_s2_path,
-#     "c1_1_path": c1_1_path,
-#     "c1_2_path": c1_2_path,
-#     "C1_path": C1_path,
-#     "I1_path": I1_path,
-#     "resource_constraint_error_path_tpi": resource_constraint_error_path_tpi,
-#     "compute_time_tpi": compute_time_tpi
-# }
-
-# # Save tpi_output dictionary as a pickle file "tpi_output.pkl" in the data_dir
-# tpi_output_file = os.path.join(data_dir, "tpi_output.pkl")
-# with open(tpi_output_file, "wb") as f:
-#     pickle.dump(tpi_output, f)
-
-# # Plot the following series
-# series_to_plot = [
-#     (b2_path, r"$b_{2,t+1}$", "Household savings", "b2_path.png"),
-#     (K1_path, r"$K_{1,t}$", "Aggregate capital", "K1_path.png"),
-#     (Y1_path, r"$Y_{1,t}$", "Output", "Y1_path.png"),
-#     (w_path, r"$w_t$", "Wage rate", "w_path.png"),
-#     (r_path, r"$r_t$", "Interest rate", "r_path.png"),
-#     (
-#         c_s1_path, r"$c_{s=1,t}$", "Household age 1 composite consumption",
-#         "c_s1_path.png"
-#     ),
-#     (
-#         c_s2_path, r"$c_{s=2,t}$", "Household age 2 composite consumption",
-#         "c_s2_path.png"
-#     ),
-#     (
-#         c1_1_path, r"$c_{1,1,t}$", "Household age 1 good 1 consumption",
-#         "c1_1_path.png"
-#     ),
-#     (
-#         c1_2_path, r"$c_{1,2,t}$", "Household age 2 good 1 consumption",
-#         "c1_2_path.png"
-#     ),
-#     (C1_path, r"$C_{1,t}$", "Aggregate consumption", "C1_path.png"),
-#     (I1_path, r"$I_{1,t}$", "Investment", "I1_path.png"),
-#     (
-#         resource_constraint_error_path_tpi, r"$Y_{1,t} - C_{1,t} - I_{1,t}$",
-#         "Resource constraint error", "resource_constraint_error_path_tpi.png"
-#     )
-# ]
-# for inputs_tup in series_to_plot:
-#     series, y_label, title, filename = inputs_tup
-#     series_plot(series, y_label, title, filename)
+# Plot the following series
+series_to_plot = [
+    (
+        [b2t_path], [r"$b_{2,t}$"], [1], r"$b_{2,t}$", "Household savings",
+        "b2t_path.png"
+    ),
+    (
+        [c_s1_path, c_s2_path], [r"$c_{s=1,t}$", r"$c_{s=2,t}$"], [1, 1],
+        r"$c_{s,t}$", r"Household age $s$ composite consumption",
+        "c_st_path.png"
+    ),
+    (
+        [c_11_path, c_12_path, c_21_path, c_22_path],
+        [r"$c_{1,1,t}$", r"$c_{1,2,t}$", r"$c_{2,1,t}$", r"$c_{2,2,t}$" ],
+        [1, 1, 1, 1], r"c_{i,s,t}$",
+        "Household differentiated good consumption", "c_ist_path.png"
+    ),
+    (
+        [C1_path, C2_path], [r"$C_{1,t}$", r"$C_{2,t}$"], [1, 1], r"$C_{i,t}$",
+        r"Aggregate consumption of differentiated good $i$", "Ci_path.png"
+    ),
+    (
+        [p1_path, p2tm1_path_long, p_path],
+        [r"$p_{1,t}$", r"$p_{2,t}$", r"$p_t$"], [1, 0, 1],
+        r"Composite and differentiated good prices",
+        "Prices of composite and differentiated goods",
+        "p_pi_path.png"
+    ),
+    ([w_path], [r"$w_t$"], [1], r"$w_t$", "Wage", "w_path.png"),
+    ([r_path], [r"$r_t$"], [1], r"$r_t$", "Interest rate", "r_path.png"),
+    (
+        [K1_path, K2_path], [r"$K_{1,t}$", r"$K_{2,t}$"], [1, 1], r"$K_{i,t}$",
+        r"Aggregate capital in industries", "Ki_path.png"
+    ),
+    (
+        [L1_path, L2_path], [r"$L_{1,t}$", r"$L_{2,t}$"], [1, 1], r"$L_{i,t}$",
+        r"Aggregate labor in industries", "Li_path.png"
+    ),
+    (
+        [Y1_path, Y2_path], [r"$Y_{1,t}$", r"$Y_{2,t}$"], [1, 1], r"$Y_{i,t}$",
+        r"Aggregate output in industries", "Yi_path.png"
+    ),
+    (
+        [I1_path, I2_path], [r"$I_{1,t}$", r"$I_{2,t}$"], [1, 1], r"$I_{i,t}$",
+        r"Aggregate investment in industries", "Ii_path.png"
+    ),
+    (
+        [resource_constraint_error_path_tpi],
+        [r"$Y_{1,t} - C_{1,t} - I_{1,t}$"], [1],
+        r"$Y_{1,t} - C_{1,t} - I_{1,t}$", "Resource constraint error",
+        "rc_error_path_tpi.png"
+    )
+]
+for inputs_tup in series_to_plot:
+    (
+        series_lst, legend_lst, y_label, title, filename, start_per_lst
+    ) = inputs_tup
+    series_plot(
+        series_lst, legend_lst, y_label, title, filename, start_per_lst
+    )
